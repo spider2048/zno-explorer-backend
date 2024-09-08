@@ -4,6 +4,8 @@ from detectron2 import model_zoo
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultPredictor
 from PIL import ImageEnhance
+import pandas as pd
+from shapely import Polygon, unary_union, minimum_rotated_rectangle
 
 import cv2
 from skimage import exposure, filters, morphology
@@ -48,7 +50,7 @@ class DetectronPredictor:
     def height_from_image(self, image):
         image = np.array(image).astype(np.float64)
         heights = exposure.rescale_intensity(image, out_range=(0, 1)).astype(np.float64)
-        # heights = 0.5 - 0.1 * np.log(1 / heights - 1.0)
+        heights = 0.5 - 0.1 * np.log(1 / heights - 1.0)
         heights = np.nan_to_num(heights, nan=0, posinf=1, neginf=0)
         heights = np.clip(heights, 0, 1)
         heights = filters.gaussian(heights, 2)
@@ -61,8 +63,7 @@ class DetectronPredictor:
         visualizer = Visualizer(
             imdata[:, :, ::-1],
             metadata={},
-            scale=0.8,
-            instance_mode=ColorMode.IMAGE_BW
+            instance_mode=ColorMode.SEGMENTATION,
         )
 
         out = visualizer.draw_instance_predictions(outputs["instances"].to("cpu"))
@@ -83,23 +84,43 @@ class DetectronPredictor:
     def get_heights(self, outputs, factor):
         instances = outputs['instances']
         masks = instances.pred_masks.numpy().astype(np.uint8)
-        
-        dimensions = []
+        scores_ = instances.scores.numpy()
 
-        for mask in masks:
+        lengths = []
+        widths = []
+        areas = []
+        xmins = []
+        xmaxs = []
+        ymins = []
+        ymaxs = []
+        scores = []
+
+        for mask, score in zip(masks, scores_):
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            full_poly = []
+
             for contour in contours:
-                rect = cv2.minAreaRect(contour)
-                box = cv2.boxPoints(rect)
+                contour = np.squeeze(contour)
+                if contour.shape[0] > 4:
+                    full_poly.append(Polygon(contour))
 
-                d1 = np.linalg.norm(box[0] - box[1])
-                d2 = np.linalg.norm(box[1] - box[2])
+            poly = unary_union(full_poly)
+            xmin, ymin, xmax, ymax = poly.bounds
+            w = xmax - xmin
+            h = ymax - ymin
 
-                w = min(d1, d2)
-                h = max(d1, d2)
+            w, h = min(w, h), max(w, h)
 
-                dimensions.append((w, h))
-        return np.array(dimensions) * factor
+            widths.append(w)
+            lengths.append(h)
+            areas.append(poly.area)
+            scores.append(score)
+            xmins.append(xmin)
+            ymins.append(ymin)
+            xmaxs.append(xmax)
+            ymaxs.append(ymax)
+
+        return widths, lengths, areas, score, xmins, xmaxs, ymins, ymaxs
 
     def get_angles(self, height_image, outputs):
         instances = outputs["instances"]
@@ -123,6 +144,23 @@ class DetectronPredictor:
         image.save(stream, format="PNG")
         return f"data:image/png;base64,{base64.b64encode(stream.getvalue()).decode()}"
 
+    def make_table(self, widths, heights, areas, scores, xmins, xmaxs, ymins, ymaxs):
+        table_data = {
+            "Rod Lengths": heights,
+            "Rod Widths": widths,
+            "Areas": areas,
+            "Scores": scores,
+            "xmin": xmins,
+            "xmax": xmaxs,
+            "ymin": ymins,
+            "ymax": ymaxs
+        }
+
+        stream = io.StringIO()
+        table = pd.DataFrame(table_data)
+        table.to_csv(stream)
+        return stream.getvalue()
+
 
     def predict(self, data, factor, params):
         imgarr = self.get_image(data, params)
@@ -131,17 +169,23 @@ class DetectronPredictor:
         heightimg = self.height_from_image(imgarr)
 
         visimg = self.visualise(imgarr, outputs)
-        dimensions = self.get_heights(outputs, factor)
+        widths, lengths, areas, scores, xmins, xmaxs, ymins, ymaxs = self.get_heights(outputs, factor)
+        table = self.make_table(widths, lengths, areas, scores, xmins, xmaxs, ymins, ymaxs)
+
+        print("Total lengths:", len(lengths))
 
         return {
             "predicted_images": [self.image_to_url(visimg)],
             "depth_map": self.image_to_url(heightimg),
-            "heights": dimensions[:, 1].tolist(),
-            "widths": dimensions[:, 0].tolist(),
-            "avg_length": np.mean(dimensions[:, 1]),
-            "avg_width": np.mean(dimensions[:, 0]),
+            "heights": lengths,
+            "widths": widths,
+            "areas": areas,
+            "scores": scores,
+            "avg_length": np.mean(lengths),
+            "avg_width": np.mean(widths),
             "detections": len(outputs["instances"].pred_masks),
-            "angles": self.get_angles(heightimg, outputs)
+            "angles": self.get_angles(heightimg, outputs),
+            "table": table
         }
 
     def process_txt(self, mag, ut):
@@ -156,8 +200,8 @@ class DetectronPredictor:
             case "cm":
                 factor = 1e7
         mag *= factor
-        return mag
-        
+        return 1
+            
     def work(self, txt_contents, img_bytes, params):
         stream = io.BytesIO()
         stream.write(img_bytes)
