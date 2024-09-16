@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 from fastapi.staticfiles import StaticFiles
+import secrets
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +49,8 @@ async def create_upload_file(request: Request):
     logging.info("received mime type %s", image.content_type)
 
     image_bytes = await image.read()
+    with open(f"{secrets.token_hex(64)}.png", "wb+") as fp:
+        fp.write(image_bytes)
     # txt_contents = await txt_file.read()
 
     results = predictor.work("", image_bytes, {
