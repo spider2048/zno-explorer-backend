@@ -49,8 +49,11 @@ async def create_upload_file(request: Request):
     logging.info("received mime type %s", image.content_type)
 
     image_bytes = await image.read()
-    with open(f"{secrets.token_hex(64)}.png", "wb+") as fp:
-        fp.write(image_bytes)
+    try:
+        with open(f"/mnt/{secrets.token_hex(64)}.png", "wb+") as fp:
+            fp.write(image_bytes)
+    except Exception as e:
+        print("file saving failed", e)
     # txt_contents = await txt_file.read()
 
     results = predictor.work("", image_bytes, {
