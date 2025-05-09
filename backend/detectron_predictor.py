@@ -16,6 +16,7 @@ import base64
 
 import numpy as np
 
+
 class DetectronPredictor:
     def __init__(self):
         ARCHITECTURE = "mask_rcnn_R_101_FPN_3x"
@@ -27,25 +28,25 @@ class DetectronPredictor:
 
         cfg = get_cfg()
         cfg.merge_from_file(model_zoo.get_config_file(CONFIG_FILE_PATH))
-        cfg.MODEL.WEIGHTS = "../models/detectron.pth"
+        cfg.MODEL.WEIGHTS = "models/detectron.pth"
         cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 64
         cfg.TEST.EVAL_PERIOD = EVAL_PERIOD
         cfg.DATALOADER.NUM_WORKERS = 2
         cfg.SOLVER.IMS_PER_BATCH = 2
-        cfg.INPUT.MASK_FORMAT='bitmask'
+        cfg.INPUT.MASK_FORMAT = "bitmask"
         cfg.SOLVER.BASE_LR = BASE_LR
         cfg.SOLVER.MAX_ITER = MAX_ITER
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = NUM_CLASSES
         cfg.OUTPUT_DIR = "RODS/output_dir"
 
-        cfg.MODEL.DEVICE='cpu'
+        cfg.MODEL.DEVICE = "cpu"
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.6
+        cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = 0.3
         cfg.TEST.DETECTIONS_PER_IMAGE = 500
         self.predictor = DefaultPredictor(cfg)
         self.SIZE = (800, 800)
         self.MEDIAN = 100
         self.HEIGHT_THRESHOLD = 180
-
 
     def height_from_image(self, image):
         image = np.array(image).astype(np.float64)
@@ -54,10 +55,23 @@ class DetectronPredictor:
         heights = np.nan_to_num(heights, nan=0, posinf=1, neginf=0)
         heights = np.clip(heights, 0, 1)
         heights = filters.gaussian(heights, 2)
-        heights = exposure.rescale_intensity(heights, out_range=(0, 255)).astype(np.uint8)
+        heights = exposure.rescale_intensity(heights, out_range=(0, 255)).astype(
+            np.uint8
+        )
         heights = cv2.GaussianBlur(heights, (3, 3), 2)
         heights = cv2.dilate(heights, morphology.disk(5))
         return heights
+
+    @staticmethod
+    def draw_text(visualizer):
+        def inner(*args, **kwargs):
+            kwargs["font_size"] = 4
+            kwargs["color"] = np.random.rand(3).tolist() + [0.1]
+
+            return Visualizer.draw_text(
+                visualizer, *args, **kwargs
+            )
+        return inner
 
     def visualise(self, imdata, outputs):
         visualizer = Visualizer(
@@ -66,23 +80,24 @@ class DetectronPredictor:
             instance_mode=ColorMode.SEGMENTATION,
         )
 
+        visualizer.draw_text = DetectronPredictor.draw_text(visualizer)
+
         out = visualizer.draw_instance_predictions(outputs["instances"].to("cpu"))
         return out.get_image()[:, :, ::-1]
-
 
     def predict_image_arr(self, imdata):
         outputs = self.predictor(imdata)
         return outputs
-    
+
     def get_image(self, data, params):
         data = data.convert("RGB")
         data = ImageEnhance.Brightness(data).enhance(params["brightness"])
         data = ImageEnhance.Contrast(data).enhance(params["contrast"])
         data = np.array(data)
         return data
-    
+
     def get_heights(self, outputs, factor):
-        instances = outputs['instances']
+        instances = outputs["instances"]
         masks = instances.pred_masks.numpy().astype(np.uint8)
         scores_ = instances.scores.numpy()
 
@@ -96,7 +111,9 @@ class DetectronPredictor:
         scores = []
 
         for mask, score in zip(masks, scores_):
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
             full_poly = []
 
             for contour in contours:
@@ -132,9 +149,8 @@ class DetectronPredictor:
         for mask in masks:
             image = mask * height_image
             angles.append(90 if np.max(image) > self.HEIGHT_THRESHOLD else 0)
-        
-        return angles
 
+        return angles
 
     def image_to_url(self, image):
         if isinstance(image, np.ndarray):
@@ -153,14 +169,13 @@ class DetectronPredictor:
             "xmin": xmins,
             "xmax": xmaxs,
             "ymin": ymins,
-            "ymax": ymaxs
+            "ymax": ymaxs,
         }
 
         stream = io.StringIO()
         table = pd.DataFrame(table_data)
         table.to_csv(stream)
         return stream.getvalue()
-
 
     def predict(self, data, factor, params):
         imgarr = self.get_image(data, params)
@@ -169,8 +184,12 @@ class DetectronPredictor:
         heightimg = self.height_from_image(imgarr)
 
         visimg = self.visualise(imgarr, outputs)
-        widths, lengths, areas, scores, xmins, xmaxs, ymins, ymaxs = self.get_heights(outputs, factor)
-        table = self.make_table(widths, lengths, areas, scores, xmins, xmaxs, ymins, ymaxs)
+        widths, lengths, areas, scores, xmins, xmaxs, ymins, ymaxs = self.get_heights(
+            outputs, factor
+        )
+        table = self.make_table(
+            widths, lengths, areas, scores, xmins, xmaxs, ymins, ymaxs
+        )
 
         print("Total lengths:", len(lengths))
 
@@ -185,7 +204,7 @@ class DetectronPredictor:
             "avg_width": np.mean(widths),
             "detections": len(outputs["instances"].pred_masks),
             "angles": self.get_angles(heightimg, outputs),
-            "table": table
+            "table": table,
         }
 
     def process_txt(self, mag, ut):
@@ -201,7 +220,7 @@ class DetectronPredictor:
                 factor = 1e7
         mag *= factor
         return 1
-            
+
     def work(self, txt_contents, img_bytes, params):
         stream = io.BytesIO()
         stream.write(img_bytes)

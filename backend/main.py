@@ -1,7 +1,6 @@
-from detectron_predictor import DetectronPredictor
-
 import logging
 
+from detectron_predictor import DetectronPredictor
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
@@ -28,11 +27,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 def parse_float(text):
     try:
         return float(text)
     except:
         return 1.0
+
 
 @app.post("/upload")
 async def create_upload_file(request: Request):
@@ -50,10 +51,17 @@ async def create_upload_file(request: Request):
     image_bytes = await image.read()
     # txt_contents = await txt_file.read()
 
-    results = predictor.work("", image_bytes, {
-        "brightness": brigntness,
-        "contrast": contrast,
-        "scale": scale,
-        "unit": unit
-    })
+    results = predictor.work(
+        "",
+        image_bytes,
+        {"brightness": brigntness, "contrast": contrast, "scale": scale, "unit": unit},
+    )
     return ORJSONResponse(results)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    config = uvicorn.Config("main:app", port=8000, log_level="info")
+    server = uvicorn.Server(config)
+    server.run()
